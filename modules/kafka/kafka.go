@@ -14,13 +14,15 @@ import (
 )
 
 const publicPort = nat.Port("9093/tcp")
+const internalPort = nat.Port("29093/tcp")
+
 const (
 	starterScript = "/usr/sbin/testcontainers_start.sh"
 
 	// starterScript {
 	starterScriptContent = `#!/bin/bash
 source /etc/confluent/docker/bash-config
-export KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://%s:%d,BROKER://%s:9092
+export KAFKA_ADVERTISED_LISTENERS=%s,PLAINTEXT://%s:%d,BROKER://%s:9092
 echo Starting Kafka KRaft mode
 sed -i '/KAFKA_ZOOKEEPER_CONNECT/d' /etc/confluent/docker/configure
 echo 'kafka-storage format --ignore-formatted -t "$(kafka-storage random-uuid)" -c /etc/kafka/kafka.properties' >> /etc/confluent/docker/configure
@@ -46,12 +48,12 @@ func RunContainer(ctx context.Context, opts ...testcontainers.ContainerCustomize
 func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustomizer) (*KafkaContainer, error) {
 	req := testcontainers.ContainerRequest{
 		Image:        img,
-		ExposedPorts: []string{string(publicPort)},
+		ExposedPorts: []string{string(publicPort), string(internalPort)},
 		Env: map[string]string{
 			// envVars {
-			"KAFKA_LISTENERS":                                "PLAINTEXT://0.0.0.0:9093,BROKER://0.0.0.0:9092,CONTROLLER://0.0.0.0:9094",
-			"KAFKA_REST_BOOTSTRAP_SERVERS":                   "PLAINTEXT://0.0.0.0:9093,BROKER://0.0.0.0:9092,CONTROLLER://0.0.0.0:9094",
-			"KAFKA_LISTENER_SECURITY_PROTOCOL_MAP":           "BROKER:PLAINTEXT,PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT",
+			"KAFKA_LISTENERS":                                "INTERNAL://0.0.0.0:29093,PLAINTEXT://0.0.0.0:9093,BROKER://0.0.0.0:9092,CONTROLLER://0.0.0.0:9094",
+			"KAFKA_REST_BOOTSTRAP_SERVERS":                   "INTERNAL://0.0.0.0:29093,PLAINTEXT://0.0.0.0:9093,BROKER://0.0.0.0:9092,CONTROLLER://0.0.0.0:9094",
+			"KAFKA_LISTENER_SECURITY_PROTOCOL_MAP":           "INTERNAL:PLAINTEXT,BROKER:PLAINTEXT,PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT",
 			"KAFKA_INTER_BROKER_LISTENER_NAME":               "BROKER",
 			"KAFKA_BROKER_ID":                                "1",
 			"KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR":         "1",
@@ -84,13 +86,24 @@ func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustom
 						}
 
 						hostname := inspect.Config.Hostname
+						aliases, err := c.NetworkAliases(ctx)
+						if err != nil {
+							return err
+						}
+
+						internalListeners := []string{}
+						for _, a := range aliases {
+							for _, alias := range a {
+								internalListeners = append(internalListeners, fmt.Sprintf("INTERNAL://%s:29093", alias))
+							}
+						}
 
 						port, err := c.MappedPort(ctx, publicPort)
 						if err != nil {
 							return err
 						}
 
-						scriptContent := fmt.Sprintf(starterScriptContent, host, port.Int(), hostname)
+						scriptContent := fmt.Sprintf(starterScriptContent, strings.Join(internalListeners, ","), host, port.Int(), hostname)
 
 						return c.CopyToContainer(ctx, []byte(scriptContent), starterScript, 0o755)
 					},
